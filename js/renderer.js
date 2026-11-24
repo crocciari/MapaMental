@@ -1,4 +1,6 @@
 import { computeLayout } from './layout.js';
+import { computeDisplayBox } from './media.js';
+import { renderFormattedText } from './markup.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
@@ -44,10 +46,12 @@ export function buildBezierEdge(parentPos, childPos, layoutMode) {
 }
 
 export class MindMapRenderer {
-  constructor(store, nodesLayer, edgesGroup) {
+  constructor(store, nodesLayer, edgesGroup, mediaStore = null, onMediaLoad = null) {
     this.store = store;
     this.nodesLayer = nodesLayer;
     this.edgesGroup = edgesGroup;
+    this.mediaStore = mediaStore;
+    this.onMediaLoad = onMediaLoad;
 
     this.nodeEls = new Map();
     this.edgeEls = new Map();
@@ -86,6 +90,7 @@ export class MindMapRenderer {
     }
 
     // Cria ou atualiza o conteúdo DOM dos nós visíveis
+    const newlyInserted = new Set();
     for (const id of visibleOrder) {
       const node = data.nodes[id];
       if (!node) continue;
@@ -95,6 +100,7 @@ export class MindMapRenderer {
         el = this._createNodeElement(id);
         this.nodeEls.set(id, el);
         this.nodesLayer.appendChild(el);
+        newlyInserted.add(id);
       }
       this._syncNodeContent(el, node, id);
     }
@@ -135,7 +141,15 @@ export class MindMapRenderer {
 
       const isHiddenByReveal = this.revealedSet !== null && !this.revealedSet.has(id);
       const scalePart = isHiddenByReveal ? ' scale(0.84)' : '';
-      el.style.transform = `translate3d(${tx}px, ${ty}px, 0)${scalePart}`;
+      const transformVal = `translate3d(${tx}px, ${ty}px, 0)${scalePart}`;
+      if (newlyInserted.has(id)) {
+        el.style.transition = 'none';
+        el.style.transform = transformVal;
+        el.offsetWidth;
+        el.style.transition = '';
+      } else {
+        el.style.transform = transformVal;
+      }
 
       el.classList.toggle('is-selected', id === selectedId);
       el.classList.toggle('side-left', pos.side === 'left');
@@ -161,6 +175,10 @@ export class MindMapRenderer {
     el.dataset.id = id;
 
     el.innerHTML = `
+      <div class="node-media" hidden>
+        <img class="node-img" alt="" draggable="false" />
+        <button type="button" class="node-img-zoom" data-action="zoom-image" title="Ampliar imagem">🔍</button>
+      </div>
       <div class="node-inner">
         <span class="node-icon" hidden></span>
         <div class="node-content">
@@ -185,6 +203,45 @@ export class MindMapRenderer {
     el.classList.toggle('style-pill', node.style === 'pill');
     el.classList.toggle('size-lg', node.size === 'lg');
 
+    const align = node.align || 'center';
+    el.classList.toggle('align-left', align === 'left');
+    el.classList.toggle('align-center', align === 'center');
+    el.classList.toggle('align-right', align === 'right');
+    el.classList.toggle('align-justify', align === 'justify');
+
+    const mediaWrap = el.querySelector('.node-media');
+    const imgEl = el.querySelector('.node-img');
+    const hasImg = Boolean(node.image && node.image.id);
+    el.classList.toggle('has-image', hasImg);
+    el.classList.toggle('has-image-lg', hasImg && node.image.size === 'lg');
+
+    if (hasImg) {
+      const box = computeDisplayBox(node.image.width, node.image.height, node.image.size || 'md');
+      imgEl.style.width = `${box.width}px`;
+      imgEl.style.height = `${box.height}px`;
+      mediaWrap.hidden = false;
+
+      if (this.mediaStore) {
+        const entry = this.mediaStore.getImageEntry(node.image.id);
+        if (entry) {
+          if (imgEl.dataset.imgId !== node.image.id) {
+            imgEl.src = entry.url;
+            imgEl.dataset.imgId = node.image.id;
+          }
+        } else {
+          this.mediaStore.loadImages([node.image.id]).then((loaded) => {
+            if (loaded && this.onMediaLoad) this.onMediaLoad();
+          });
+        }
+      }
+    } else {
+      mediaWrap.hidden = true;
+      if (imgEl.dataset.imgId) {
+        imgEl.removeAttribute('src');
+        delete imgEl.dataset.imgId;
+      }
+    }
+
     const iconEl = el.querySelector('.node-icon');
     if (node.icon) {
       iconEl.textContent = node.icon;
@@ -196,12 +253,12 @@ export class MindMapRenderer {
 
     const titleEl = el.querySelector('.node-title');
     if (this.editingNodeId !== id) {
-      titleEl.textContent = node.text || 'Sem título';
+      renderFormattedText(titleEl, node.text || 'Sem título');
     }
 
     const subEl = el.querySelector('.node-subtitle');
     if (node.subtitle && node.subtitle.trim()) {
-      subEl.textContent = node.subtitle;
+      renderFormattedText(subEl, node.subtitle);
       subEl.hidden = false;
     } else {
       subEl.textContent = '';

@@ -4,7 +4,7 @@
  */
 
 export class PresentationController {
-  constructor({ store, renderer, camera, hudEl, stepLabelEl, btnProgressive, btnSpotlight, btnCamera, onExit }) {
+  constructor({ store, renderer, camera, hudEl, stepLabelEl, btnProgressive, btnSpotlight, btnCamera, btnGuide, onEnter, onExit }) {
     this.store = store;
     this.renderer = renderer;
     this.camera = camera;
@@ -13,11 +13,15 @@ export class PresentationController {
     this.btnProgressive = btnProgressive;
     this.btnSpotlight = btnSpotlight;
     this.btnCamera = btnCamera;
+    this.btnGuide = btnGuide;
+    this.onEnter = onEnter;
     this.onExit = onExit;
 
     this.active = false;
-    this.progressive = false;
+    this.progressive = true;
     this.autoCamera = true;
+    this.guideHidden = false;
+    this.prevSpotlight = false;
     this.steps = [];
     this.stepIndex = 0;
     this.idleTimer = null;
@@ -25,22 +29,24 @@ export class PresentationController {
     this._onUserPointerMove = () => this._wakeHud();
   }
 
-  enter({ progressive = false } = {}) {
+  enter({ progressive = true, spotlight = true, autoCamera = true } = {}) {
     this.active = true;
+    this.prevSpotlight = this.renderer.spotlightEnabled;
     this.progressive = progressive;
+    this.autoCamera = autoCamera;
+    this.guideHidden = false;
 
     document.body.classList.add('presentation-mode');
-    document.body.classList.remove('hud-hidden');
+    document.body.classList.remove('hud-hidden', 'guide-visual-hidden');
     this.hudEl.hidden = false;
+    if (this.onEnter) this.onEnter();
 
+    this.renderer.setSpotlight(spotlight);
     this.steps = this.store.getVisibleDfsOrder();
-    if (this.progressive) {
-      this.stepIndex = 0;
-      this.store.select(this.steps[0]);
-      this.renderer.setSpotlight(true);
-    } else {
-      const idx = this.steps.indexOf(this.store.selectedId);
-      this.stepIndex = idx >= 0 ? idx : 0;
+    const idx = this.steps.indexOf(this.store.selectedId);
+    this.stepIndex = idx >= 0 ? idx : 0;
+    if (this.steps[this.stepIndex]) {
+      this.store.select(this.steps[this.stepIndex]);
     }
 
     this._syncRevealed();
@@ -56,8 +62,9 @@ export class PresentationController {
     if (!this.active) return;
     this.active = false;
     this.progressive = false;
+    this.guideHidden = false;
 
-    document.body.classList.remove('presentation-mode', 'hud-hidden');
+    document.body.classList.remove('presentation-mode', 'hud-hidden', 'guide-visual-hidden');
     this.hudEl.hidden = true;
     this.hudEl.classList.remove('hud-idle');
 
@@ -68,9 +75,10 @@ export class PresentationController {
     window.removeEventListener('mousemove', this._onUserPointerMove);
 
     this.renderer.setRevealedSet(null);
+    this.renderer.setSpotlight(Boolean(this.prevSpotlight));
+    if (this.onExit) this.onExit();
     const layout = this.renderer.render();
     this.camera.fitToBounds(layout.bounds, { animate: true });
-    if (this.onExit) this.onExit();
   }
 
   nextStep() {
@@ -146,13 +154,20 @@ export class PresentationController {
     this.renderer.setRevealedSet(null);
     this.renderer.setSpotlight(false);
     const layout = this.renderer.render();
-    this.camera.fitToBounds(layout.bounds, { animate: true, duration: 680 });
+    this.camera.fitToBounds(layout.bounds, { padding: 40, maxZoom: 1.5, animate: true, duration: 680 });
     this._updateHudUI();
   }
 
   toggleHudVisibility() {
     if (!this.active) return;
     document.body.classList.toggle('hud-hidden');
+  }
+
+  toggleGuideVisual() {
+    if (!this.active) return;
+    this.guideHidden = !this.guideHidden;
+    document.body.classList.toggle('guide-visual-hidden', this.guideHidden);
+    this._updateHudUI();
   }
 
   _syncRevealed() {
@@ -170,7 +185,7 @@ export class PresentationController {
     const pos = this.renderer.lastLayout.positions.get(nodeId);
     if (pos) {
       const depth = this.store.getDepth(nodeId);
-      const zoom = depth === 0 ? 1.18 : 1.32;
+      const zoom = depth === 0 ? 1.55 : 1.85;
       this.camera.focusNode(pos, { targetScale: zoom, animate: true, duration: 620 });
     }
   }
@@ -180,6 +195,11 @@ export class PresentationController {
     this.btnProgressive.classList.toggle('active', this.progressive);
     this.btnSpotlight.classList.toggle('active', this.renderer.spotlightEnabled);
     this.btnCamera.classList.toggle('active', this.autoCamera);
+    if (this.btnGuide) {
+      const hasGuide = (this.store.data.frameGuide || 'none') !== 'none';
+      this.btnGuide.hidden = !hasGuide;
+      this.btnGuide.classList.toggle('active', hasGuide && !this.guideHidden);
+    }
   }
 
   _wakeHud() {

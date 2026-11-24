@@ -1,6 +1,7 @@
 import { BRANCH_PALETTE, TEMPLATES } from './templates.js';
 
 const STORAGE_KEY = 'mapamental_studio_v1';
+const LIBRARY_KEY = 'mapamental_studio_library_v1';
 const MAX_HISTORY = 60;
 
 function deepClone(obj) {
@@ -11,31 +12,87 @@ function generateId() {
   return 'n_' + Math.random().toString(36).slice(2, 9);
 }
 
+function generateMapId() {
+  return 'map_' + Math.random().toString(36).slice(2, 10);
+}
+
 export class MindMapStore {
   constructor() {
     this.listeners = new Set();
     this.history = [];
     this.future = [];
     this.selectedId = 'root';
+    this.activeMapId = null;
+    this.library = { activeMapId: null, maps: {} };
     this.data = this._loadInitial();
   }
 
   _loadInitial() {
+    // 1. Tenta carregar a biblioteca multi-mapas
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (this._isValidData(parsed)) {
-          this.selectedId = parsed.rootId;
-          return parsed;
+      const rawLib = localStorage.getItem(LIBRARY_KEY);
+      if (rawLib) {
+        const parsedLib = JSON.parse(rawLib);
+        if (parsedLib && parsedLib.maps && typeof parsedLib.maps === 'object') {
+          const validEntries = Object.values(parsedLib.maps).filter(
+            (entry) => entry && entry.id && this._isValidData(entry.data)
+          );
+          if (validEntries.length > 0) {
+            this.library = {
+              activeMapId: parsedLib.activeMapId,
+              maps: Object.fromEntries(validEntries.map((e) => [e.id, e])),
+            };
+            const targetId = this.library.maps[parsedLib.activeMapId]
+              ? parsedLib.activeMapId
+              : validEntries[0].id;
+            this.activeMapId = targetId;
+            this.library.activeMapId = targetId;
+            const activeData = deepClone(this.library.maps[targetId].data);
+            this.selectedId = activeData.rootId;
+            return activeData;
+          }
         }
       }
     } catch {
-      // Fallback para modelo padrão se localStorage falhar
+      // Ignora erro ao ler biblioteca
     }
-    const initial = TEMPLATES['youtube-video'].create();
-    this.selectedId = initial.rootId;
-    return initial;
+
+    // 2. Migra mapa legado único (STORAGE_KEY) se existir
+    let initialData = null;
+    try {
+      const rawLegacy = localStorage.getItem(STORAGE_KEY);
+      if (rawLegacy) {
+        const parsedLegacy = JSON.parse(rawLegacy);
+        if (this._isValidData(parsedLegacy)) {
+          initialData = parsedLegacy;
+        }
+      }
+    } catch {
+      // Ignora erro ao ler legado
+    }
+
+    // 3. Caso contrário, cria a partir do modelo padrão
+    if (!initialData) {
+      initialData = TEMPLATES['youtube-video'].create();
+    }
+
+    const now = Date.now();
+    const mapId = generateMapId();
+    this.activeMapId = mapId;
+    this.library = {
+      activeMapId: mapId,
+      maps: {
+        [mapId]: {
+          id: mapId,
+          createdAt: now,
+          updatedAt: now,
+          data: deepClone(initialData),
+        },
+      },
+    };
+    this.selectedId = initialData.rootId;
+    this._saveLibraryToStorage();
+    return initialData;
   }
 
   _isValidData(obj) {
@@ -49,12 +106,31 @@ export class MindMapStore {
     );
   }
 
-  _persist() {
+  _saveLibraryToStorage() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.data));
+      localStorage.setItem(LIBRARY_KEY, JSON.stringify(this.library));
     } catch {
       // Ignora erro de quota
     }
+  }
+
+  _persist() {
+    const now = Date.now();
+    if (!this.activeMapId || !this.library.maps[this.activeMapId]) {
+      const mapId = this.activeMapId || generateMapId();
+      this.activeMapId = mapId;
+      this.library.maps[mapId] = {
+        id: mapId,
+        createdAt: now,
+        updatedAt: now,
+        data: deepClone(this.data),
+      };
+    } else {
+      this.library.maps[this.activeMapId].data = deepClone(this.data);
+      this.library.maps[this.activeMapId].updatedAt = now;
+    }
+    this.library.activeMapId = this.activeMapId;
+    this._saveLibraryToStorage();
   }
 
   _pushHistory() {
@@ -355,6 +431,45 @@ export class MindMapStore {
     return true;
   }
 
+  moveNodeOrder(nodeId, delta) {
+    if (!delta) return false;
+    const node = this.data.nodes[nodeId];
+    if (!node || !node.parentId) return false;
+    const parent = this.data.nodes[node.parentId];
+    if (!parent) return false;
+
+    const idx = parent.children.indexOf(nodeId);
+    const targetIdx = idx + delta;
+    if (idx < 0 || targetIdx < 0 || targetIdx >= parent.children.length) return false;
+
+    this._pushHistory();
+    parent.children.splice(idx, 1);
+    parent.children.splice(targetIdx, 0, nodeId);
+    this.notify('reorder');
+    return true;
+  }
+
+  toggleNodeSide(nodeId) {
+    const node = this.data.nodes[nodeId];
+    if (!node || node.parentId !== this.data.rootId) return false;
+
+    this._pushHistory();
+    const nextSide = node.side === 'left' ? 'right' : 'left';
+    const applySide = (id) => {
+      const target = this.data.nodes[id];
+      if (!target) return;
+      target.side = nextSide;
+      for (const cid of target.children) {
+        applySide(cid);
+      }
+    };
+    applySide(nodeId);
+    node.offsetX = 0;
+    node.offsetY = 0;
+    this.notify('side-toggle');
+    return true;
+  }
+
   resetOffsets() {
     this._pushHistory();
     for (const node of Object.values(this.data.nodes)) {
@@ -386,5 +501,179 @@ export class MindMapStore {
 
   exportData() {
     return deepClone(this.data);
+  }
+
+  getAllImageIds() {
+    const ids = new Set();
+    for (const node of Object.values(this.data.nodes || {})) {
+      if (node?.image?.id) {
+        ids.add(node.image.id);
+      }
+    }
+    return [...ids];
+  }
+
+  getAllLibraryImageIds() {
+    const ids = new Set(this.getAllImageIds());
+    for (const entry of Object.values(this.library.maps || {})) {
+      if (!entry?.data?.nodes) continue;
+      for (const node of Object.values(entry.data.nodes)) {
+        if (node?.image?.id) {
+          ids.add(node.image.id);
+        }
+      }
+    }
+    return ids;
+  }
+
+  listMaps() {
+    return Object.values(this.library.maps)
+      .map((entry) => {
+        const root = entry.data.nodes?.[entry.data.rootId];
+        return {
+          id: entry.id,
+          title: entry.data.title || root?.text || 'Sem título',
+          icon: root?.icon || '🧠',
+          theme: entry.data.theme || 'dark-studio',
+          layout: entry.data.layout || 'bilateral',
+          nodeCount: Object.keys(entry.data.nodes || {}).length,
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt,
+          isActive: entry.id === this.activeMapId,
+        };
+      })
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  createMap(templateId = 'blank', customTitle) {
+    const tpl = TEMPLATES[templateId] || TEMPLATES.blank;
+    const newData = tpl.create();
+    if (customTitle && customTitle.trim()) {
+      newData.title = customTitle.trim();
+    }
+    const now = Date.now();
+    const mapId = generateMapId();
+
+    this.library.maps[mapId] = {
+      id: mapId,
+      createdAt: now,
+      updatedAt: now,
+      data: deepClone(newData),
+    };
+    this.activeMapId = mapId;
+    this.library.activeMapId = mapId;
+    this.data = newData;
+    this.history = [];
+    this.future = [];
+    this.selectedId = newData.rootId;
+    this.notify('map-switch');
+    return mapId;
+  }
+
+  switchMap(mapId) {
+    const entry = this.library.maps[mapId];
+    if (!entry) return false;
+    if (mapId === this.activeMapId) return true;
+
+    this._persist();
+    this.activeMapId = mapId;
+    this.library.activeMapId = mapId;
+    this.data = deepClone(entry.data);
+    this.history = [];
+    this.future = [];
+    this.selectedId = this.data.rootId;
+    this.notify('map-switch');
+    return true;
+  }
+
+  duplicateMap(mapId) {
+    const entry = this.library.maps[mapId];
+    if (!entry) return null;
+    if (mapId === this.activeMapId) {
+      this._persist();
+    }
+    const clonedData = deepClone(this.library.maps[mapId].data);
+    clonedData.title = `${clonedData.title || 'Sem título'} (Cópia)`;
+
+    const now = Date.now();
+    const newId = generateMapId();
+    this.library.maps[newId] = {
+      id: newId,
+      createdAt: now,
+      updatedAt: now,
+      data: deepClone(clonedData),
+    };
+    this.activeMapId = newId;
+    this.library.activeMapId = newId;
+    this.data = clonedData;
+    this.history = [];
+    this.future = [];
+    this.selectedId = clonedData.rootId;
+    this.notify('map-switch');
+    return newId;
+  }
+
+  renameMap(mapId, newTitle) {
+    const entry = this.library.maps[mapId];
+    if (!entry) return false;
+    const clean = (newTitle || '').trim() || 'Sem título';
+    entry.data.title = clean;
+    entry.updatedAt = Date.now();
+    if (mapId === this.activeMapId) {
+      this.data.title = clean;
+    }
+    this.notify('meta');
+    return true;
+  }
+
+  deleteMap(mapId) {
+    if (!this.library.maps[mapId]) return false;
+    delete this.library.maps[mapId];
+
+    const remaining = this.listMaps();
+    if (remaining.length === 0) {
+      this.createMap('blank');
+      return true;
+    }
+
+    if (mapId === this.activeMapId) {
+      const next = remaining[0];
+      this.activeMapId = next.id;
+      this.library.activeMapId = next.id;
+      this.data = deepClone(this.library.maps[next.id].data);
+      this.history = [];
+      this.future = [];
+      this.selectedId = this.data.rootId;
+      this.notify('map-switch');
+    } else {
+      this._saveLibraryToStorage();
+      for (const fn of this.listeners) {
+        fn(this.data, 'library');
+      }
+    }
+    return true;
+  }
+
+  importAsNewMap(jsonObj) {
+    if (!this._isValidData(jsonObj)) {
+      throw new Error('Arquivo JSON inválido para o MapaMental Studio.');
+    }
+    const importedData = deepClone(jsonObj);
+    const now = Date.now();
+    const mapId = generateMapId();
+    this.library.maps[mapId] = {
+      id: mapId,
+      createdAt: now,
+      updatedAt: now,
+      data: deepClone(importedData),
+    };
+    this.activeMapId = mapId;
+    this.library.activeMapId = mapId;
+    this.data = importedData;
+    this.history = [];
+    this.future = [];
+    this.selectedId = importedData.rootId;
+    this.notify('map-switch');
+    return mapId;
   }
 }

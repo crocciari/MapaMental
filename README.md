@@ -25,11 +25,14 @@ Sem build, sem `npm install` e sem dependências externas: abra no navegador e c
 - **Atalhos produtivos:** `Tab` cria filho, `Enter` cria irmão, `Duplo clique` ou `F2` edita direto no cartão.
 - **Arrastar e Reanexar:** mova nós livremente pelo canvas ou solte um cartão sobre outro para trocar de ramo.
 - **3 Layouts Automáticos:** Bilateral (clássico), Árvore para a direita e Vertical (organograma), com cálculo automático sem sobreposição.
+- **Meus Mapas (`M`):** biblioteca integrada no navegador para salvar, buscar, renomear, duplicar e alternar entre vários mapas mentais automaticamente via `localStorage`.
+- **Formatação rápida nos cartões:** use `**texto**` para **negrito**, `__texto__` para *itálico*, `==texto==` para destaque com cor invertida do ramo e `--texto--` para texto menor.
+- **Imagens nos Nós (`.webp`, PNG, JPG, SVG):** anexe imagens pelo Inspetor, arraste direto sobre um cartão ou cole prints com `Ctrl + V`. Arquivos são armazenados em `IndexedDB` e otimizados automaticamente para `.webp` (mantendo `.webp` originais intactos e suportando ampliação em tela cheia no clique da lupa).
 - **Exportação Profissional:**
   - **PNG em Alta Resolução (4K)**
   - **PNG com Fundo Transparente** (ideal para jogar direto por cima do vídeo no editor)
   - **SVG Vetorial**
-  - **Salvar / Abrir Projeto (`.json`)** + salvamento automático no `localStorage`.
+  - **Salvar / Abrir Projeto (`.json`)** para backup e compartilhamento entre dispositivos.
 
 ---
 
@@ -82,10 +85,13 @@ Depois abra `http://localhost:8080` no navegador.
 | `Arrastar nó` | Reposicionar manualmente (ou soltar em outro nó para reanexar) |
 | `Espaço` | Recolher / expandir ramo |
 | `Del` / `Backspace` | Excluir nó selecionado |
+| `Alt + ↑` / `Alt + ↓` | Mover tópico para aparecer antes ou depois na apresentação |
 | `Ctrl + Z` / `Ctrl + Y` | Desfazer / Refazer |
 | `Arrastar fundo` | Mover câmera (Pan) |
 | `Scroll do mouse` | Zoom |
 | `F` | Enquadrar o mapa inteiro na tela |
+| `M` | Abrir biblioteca Meus Mapas |
+| `Ctrl + V` | Colar imagem no nó selecionado |
 | `?` | Abrir ajuda e dicas |
 
 ### Apresentação / Vídeo
@@ -98,7 +104,8 @@ Depois abra `http://localhost:8080` no navegador.
 | `S` | Ligar/desligar Modo Spotlight |
 | `C` | Ligar/desligar Câmera Automática |
 | `A` | Mostrar mapa inteiro (visão geral) |
-| `H` | Ocultar/mostrar barra de apresentação |
+| `G` | Ocultar/mostrar linhas da guia (16:9 / 9:16) |
+| `H` | Ocultar/mostrar barra de apresentação e guia |
 | `Esc` | Sair do Modo Apresentação |
 
 ---
@@ -114,6 +121,7 @@ MapaMental/
 ├── js/
 │   ├── app.js           # Inicialização, eventos, atalhos e drag & drop
 │   ├── state.js         # Estado da árvore, histórico Undo/Redo e localStorage
+│   ├── media.js         # Armazenamento de imagens em IndexedDB e conversão WebP
 │   ├── layout.js        # Algoritmos de layout (Bilateral, Árvore, Vertical)
 │   ├── camera.js        # Câmera 2D com zoom e animações suaves
 │   ├── renderer.js      # Renderização híbrida (cartões HTML + curvas SVG)

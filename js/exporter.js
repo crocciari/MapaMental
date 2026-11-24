@@ -1,4 +1,6 @@
 import { buildBezierEdge } from './renderer.js';
+import { computeDisplayBox } from './media.js';
+import { parseInlineMarkup } from './markup.js';
 
 const THEME_EXPORT_COLORS = {
   'dark-studio': {
@@ -74,26 +76,103 @@ function triggerDownload(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
-function wrapTextLines(text, maxChars) {
-  const words = String(text || '').trim().split(/\s+/);
-  if (!words[0]) return [''];
+function wrapStyledLines(text, maxChars) {
+  const paragraphs = String(text || '').replace(/\r\n/g, '\n').split('\n');
   const lines = [];
-  let line = '';
-  for (const word of words) {
-    if (!line) {
-      line = word;
-    } else if (line.length + 1 + word.length <= maxChars) {
-      line += ' ' + word;
-    } else {
-      lines.push(line);
-      line = word;
+
+  for (const para of paragraphs) {
+    if (!para.trim()) {
+      lines.push([]);
+      continue;
     }
+
+    const tokens = parseInlineMarkup(para);
+    const chunks = [];
+    let pendingSpace = false;
+    for (const tok of tokens) {
+      const parts = tok.value.split(/([ \t]+)/);
+      for (const p of parts) {
+        if (!p) continue;
+        if (/^[ \t]+$/.test(p)) {
+          pendingSpace = true;
+        } else {
+          chunks.push({ type: tok.type, word: p, spaceBefore: chunks.length > 0 && pendingSpace });
+          pendingSpace = false;
+        }
+      }
+    }
+
+    if (!chunks.length) {
+      lines.push([]);
+      continue;
+    }
+
+    let current = [];
+    let currentLen = 0;
+
+    for (const item of chunks) {
+      const wLen = item.word.length;
+      const gap = currentLen > 0 && item.spaceBefore ? 1 : 0;
+      if (currentLen === 0) {
+        current.push({ type: item.type, text: item.word });
+        currentLen = wLen;
+      } else if (currentLen + gap + wLen <= maxChars) {
+        const prev = current[current.length - 1];
+        const prefix = gap ? ' ' : '';
+        if (prev.type === item.type) {
+          prev.text += prefix + item.word;
+        } else if (prefix && item.type === 'text') {
+          current.push({ type: 'text', text: prefix + item.word });
+        } else {
+          if (prefix) prev.text += prefix;
+          current.push({ type: item.type, text: item.word });
+        }
+        currentLen += gap + wLen;
+      } else {
+        lines.push(current);
+        current = [{ type: item.type, text: item.word }];
+        currentLen = wLen;
+      }
+    }
+
+    if (current.length) lines.push(current);
   }
-  if (line) lines.push(line);
-  return lines;
+
+  return lines.length ? lines : [[]];
 }
 
-export function buildStandaloneSVG(store, layoutResult, { transparentBg = false } = {}) {
+function renderSvgLines(lines, textX, lineHeight, highlightFill, boldFill) {
+  return lines
+    .map((segs, i) => {
+      const dy = i === 0 ? 0 : lineHeight;
+      if (!segs.length) {
+        return `<tspan x="${textX}" dy="${dy}">&#160;</tspan>`;
+      }
+      return segs
+        .map((seg, j) => {
+          const posAttrs = j === 0 ? ` x="${textX}" dy="${dy}"` : '';
+          let styleAttrs = '';
+          if (seg.type === 'bold') {
+            styleAttrs = ` fill="${boldFill}" font-weight="800"`;
+          } else if (seg.type === 'italic') {
+            styleAttrs = ' font-style="italic"';
+          } else if (seg.type === 'highlight') {
+            styleAttrs = ` fill="${highlightFill}" font-weight="800"`;
+          } else if (seg.type === 'small') {
+            styleAttrs = ' font-size="0.8em" opacity="0.82"';
+          }
+          return `<tspan${posAttrs}${styleAttrs}>${escapeXml(seg.text)}</tspan>`;
+        })
+        .join('');
+    })
+    .join('');
+}
+
+export function buildStandaloneSVG(
+  store,
+  layoutResult,
+  { transparentBg = false, imageDataMap = new Map() } = {}
+) {
   const data = store.data;
   const palette = THEME_EXPORT_COLORS[data.theme] || THEME_EXPORT_COLORS['dark-studio'];
   const pad = 84;
@@ -105,6 +184,7 @@ export function buildStandaloneSVG(store, layoutResult, { transparentBg = false 
 
   const edgesSvg = [];
   const nodesSvg = [];
+  const clipDefs = [];
 
   for (const [id, pos] of layoutResult.positions.entries()) {
     const node = data.nodes[id];
@@ -146,13 +226,38 @@ export function buildStandaloneSVG(store, layoutResult, { transparentBg = false 
 
     const titleFontSize = depth === 0 ? (node.size === 'lg' ? 21 : 19) : depth === 1 ? 15 : 14;
     const maxChars = Math.max(14, Math.floor((w - (node.icon ? 52 : 30)) / (titleFontSize * 0.56)));
-    const titleLines = wrapTextLines(node.text || 'Sem título', maxChars);
-    const subLines = node.subtitle ? wrapTextLines(node.subtitle, maxChars + 4) : [];
+    const titleLines = wrapStyledLines(node.text || 'Sem título', maxChars);
+    const subLines = node.subtitle ? wrapStyledLines(node.subtitle, maxChars + 4) : [];
+
+    let imageSvg = '';
+    let textAreaTop = y;
+    let textAreaH = h;
+    const imgDataUrl = node.image?.id ? imageDataMap.get(node.image.id) : null;
+    if (imgDataUrl) {
+      const box = computeDisplayBox(node.image.width, node.image.height, node.image.size || 'md');
+      const imgW = Math.min(box.width, Math.max(40, w - 24));
+      const imgH = Math.round((box.height * imgW) / Math.max(1, box.width));
+      const imgX = Math.round(x + (w - imgW) / 2);
+      const imgY = y + 12;
+      const clipId = `clip_${String(id).replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+      clipDefs.push(
+        `<clipPath id="${clipId}"><rect x="${imgX}" y="${imgY}" width="${imgW}" height="${imgH}" rx="10" /></clipPath>`
+      );
+      imageSvg = `<image href="${escapeXml(imgDataUrl)}" x="${imgX}" y="${imgY}" width="${imgW}" height="${imgH}" preserveAspectRatio="xMidYMid meet" clip-path="url(#${clipId})" />`;
+      textAreaTop = imgY + imgH + 10;
+      textAreaH = Math.max(26, y + h - textAreaTop - 8);
+    }
 
     const totalLinesHeight = titleLines.length * (titleFontSize + 4) + subLines.length * 16;
-    const startY = y + Math.max(18, (h - totalLinesHeight) / 2 + titleFontSize * 0.78);
-    const textX = depth === 0 ? x + w / 2 : x + (node.icon ? 42 : 18);
-    const textAnchor = depth === 0 ? 'middle' : 'start';
+    const startY = textAreaTop + Math.max(16, (textAreaH - totalLinesHeight) / 2 + titleFontSize * 0.78);
+    const align = node.align || 'center';
+    const textAnchor = align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start';
+    const textX =
+      align === 'center'
+        ? x + w / 2
+        : align === 'right'
+          ? x + w - 18
+          : x + (node.icon ? 42 : 18);
 
     let accentBar = '';
     if (depth > 0 && node.style !== 'pill') {
@@ -162,23 +267,18 @@ export function buildStandaloneSVG(store, layoutResult, { transparentBg = false 
     let iconSvg = '';
     if (node.icon) {
       const iconX = depth === 0 ? x + 22 : x + 16;
-      const iconY = y + h / 2 + 6;
+      const iconY = textAreaTop + textAreaH / 2 + 6;
       iconSvg = `<text x="${iconX}" y="${iconY}" font-size="${depth === 0 ? 22 : 17}" font-family="Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif">${escapeXml(node.icon)}</text>`;
     }
 
-    const tspans = titleLines
-      .map(
-        (ln, i) =>
-          `<tspan x="${textX}" dy="${i === 0 ? 0 : titleFontSize + 4}">${escapeXml(ln)}</tspan>`
-      )
-      .join('');
+    const highlightFill = isFilled ? '#FFFFFF' : color;
+    const boldFill = isFilled ? '#090D16' : color;
+    const tspans = renderSvgLines(titleLines, textX, titleFontSize + 4, highlightFill, boldFill);
 
     let subSvg = '';
     if (subLines.length) {
       const subY = startY + titleLines.length * (titleFontSize + 4) + 2;
-      const subTspans = subLines
-        .map((ln, i) => `<tspan x="${textX}" dy="${i === 0 ? 0 : 16}">${escapeXml(ln)}</tspan>`)
-        .join('');
+      const subTspans = renderSvgLines(subLines, textX, 16, highlightFill, boldFill);
       subSvg = `<text x="${textX}" y="${subY}" text-anchor="${textAnchor}" font-size="12" font-weight="500" fill="${subColor}" font-family="Plus Jakarta Sans, Inter, Segoe UI, sans-serif">${subTspans}</text>`;
     }
 
@@ -186,6 +286,7 @@ export function buildStandaloneSVG(store, layoutResult, { transparentBg = false 
       <g filter="url(#card-shadow)">
         <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${rx}" fill="${fill}" stroke="${stroke}" stroke-width="${strokeW}" />
         ${accentBar}
+        ${imageSvg}
         ${iconSvg}
         <text x="${textX}" y="${startY}" text-anchor="${textAnchor}" font-size="${titleFontSize}" font-weight="${depth === 0 ? 800 : depth === 1 ? 700 : 600}" fill="${textColor}" font-family="Plus Jakarta Sans, Inter, Segoe UI, sans-serif">${tspans}</text>
         ${subSvg}
@@ -204,6 +305,7 @@ export function buildStandaloneSVG(store, layoutResult, { transparentBg = false 
     <filter id="card-shadow" x="-15%" y="-15%" width="130%" height="140%">
       <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#000000" flood-opacity="0.28" />
     </filter>
+    ${clipDefs.join('\n    ')}
   </defs>
   ${bgRect}
   <g>${edgesSvg.join('\n')}</g>
@@ -212,14 +314,36 @@ export function buildStandaloneSVG(store, layoutResult, { transparentBg = false 
   };
 }
 
-export function exportSVG(store, layoutResult) {
-  const { svg } = buildStandaloneSVG(store, layoutResult, { transparentBg: false });
+async function collectImageDataMap(store, layoutResult, mediaStore) {
+  const imageDataMap = new Map();
+  if (!mediaStore) return imageDataMap;
+
+  const ids = new Set();
+  for (const id of layoutResult.positions.keys()) {
+    const node = store.data.nodes[id];
+    if (node?.image?.id) ids.add(node.image.id);
+  }
+
+  for (const imgId of ids) {
+    const dataUrl = await mediaStore.getImageAsDataUrl(imgId);
+    if (dataUrl) imageDataMap.set(imgId, dataUrl);
+  }
+  return imageDataMap;
+}
+
+export async function exportSVG(store, layoutResult, mediaStore = null) {
+  const imageDataMap = await collectImageDataMap(store, layoutResult, mediaStore);
+  const { svg } = buildStandaloneSVG(store, layoutResult, { transparentBg: false, imageDataMap });
   const filename = `${slugify(store.data.title)}.svg`;
   triggerDownload(new Blob([svg], { type: 'image/svg+xml;charset=utf-8' }), filename);
 }
 
-export async function exportPNG(store, layoutResult, { transparentBg = false } = {}) {
-  const { svg, width, height } = buildStandaloneSVG(store, layoutResult, { transparentBg });
+export async function exportPNG(store, layoutResult, { transparentBg = false, mediaStore = null } = {}) {
+  const imageDataMap = await collectImageDataMap(store, layoutResult, mediaStore);
+  const { svg, width, height } = buildStandaloneSVG(store, layoutResult, {
+    transparentBg,
+    imageDataMap,
+  });
   const targetMax = 3840;
   const scale = Math.min(3.5, Math.max(2, targetMax / Math.max(width, height)));
   const outW = Math.round(width * scale);
@@ -250,8 +374,30 @@ export async function exportPNG(store, layoutResult, { transparentBg = false } =
   }
 }
 
-export function exportJSON(store) {
-  const json = JSON.stringify(store.exportData(), null, 2);
+export async function exportJSON(store, mediaStore = null) {
+  const payload = store.exportData();
+  if (mediaStore) {
+    const imgIds = store.getAllImageIds();
+    if (imgIds.length) {
+      const media = {};
+      for (const imgId of imgIds) {
+        const dataUrl = await mediaStore.getImageAsDataUrl(imgId);
+        const entry = mediaStore.getImageEntry(imgId);
+        if (dataUrl) {
+          media[imgId] = {
+            dataUrl,
+            width: entry?.width || 320,
+            height: entry?.height || 200,
+            mime: entry?.mime || 'image/webp',
+          };
+        }
+      }
+      if (Object.keys(media).length) {
+        payload._media = media;
+      }
+    }
+  }
+  const json = JSON.stringify(payload, null, 2);
   const filename = `${slugify(store.data.title)}.json`;
   triggerDownload(new Blob([json], { type: 'application/json;charset=utf-8' }), filename);
 }

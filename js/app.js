@@ -1,13 +1,15 @@
-import { BRANCH_PALETTE, EMOJI_PRESETS } from './templates.js';
+import { BRANCH_PALETTE, EMOJI_CATEGORIES } from './templates.js';
 import { MindMapStore } from './state.js';
 import { Camera } from './camera.js';
 import { MindMapRenderer } from './renderer.js';
 import { PresentationController } from './presentation.js';
 import { exportJSON, exportPNG, exportSVG, readJSONFile } from './exporter.js';
+import { MediaStore, extensionFromMime, formatBytes } from './media.js';
 
 const $ = (sel) => document.querySelector(sel);
 
 const store = new MindMapStore();
+const mediaStore = new MediaStore();
 
 const viewportEl = $('#viewport');
 const worldEl = $('#world');
@@ -35,9 +37,26 @@ const inspectorForm = $('#inspector-form');
 const inspectorEmpty = $('#inspector-empty');
 const btnToggleCollapse = $('#btn-toggle-collapse');
 const btnDeleteNode = $('#btn-delete-node');
+const inspectorStepBadge = $('#inspector-step-badge');
+const btnMoveUp = $('#btn-move-up');
+const btnMoveDown = $('#btn-move-down');
+const btnToggleSide = $('#btn-toggle-side');
 
 const toastContainer = $('#toast-container');
 const modalHelp = $('#modal-help');
+const modalMaps = $('#modal-maps');
+const modalLightbox = $('#modal-lightbox');
+const lightboxImg = $('#lightbox-img');
+const mapsListEl = $('#maps-list');
+const inpSearchMaps = $('#inp-search-maps');
+const mapsCountBadge = $('#maps-count-badge');
+const inspectorImagePreview = $('#inspector-image-preview');
+const inpImageThumb = $('#inp-image-thumb');
+const inpImageMeta = $('#inp-image-meta');
+const btnDownloadImage = $('#btn-download-image');
+const btnRemoveImage = $('#btn-remove-image');
+const btnLightboxDownload = $('#btn-lightbox-download');
+const fileUploadImage = $('#file-upload-image');
 const fileImportInput = $('#file-import-json');
 
 function showToast(message) {
@@ -52,7 +71,10 @@ const camera = new Camera(worldEl, viewportEl, frameGuideEl, frameBoxEl, (scale)
   zoomLabelEl.textContent = `${Math.round(scale * 100)}%`;
 });
 
-const renderer = new MindMapRenderer(store, nodesLayer, edgesGroup);
+const renderer = new MindMapRenderer(store, nodesLayer, edgesGroup, mediaStore, () => {
+  renderer.render();
+  syncToolbarAndInspector();
+});
 
 const presentation = new PresentationController({
   store,
@@ -63,8 +85,13 @@ const presentation = new PresentationController({
   btnProgressive: $('#btn-pres-progressive'),
   btnSpotlight: $('#btn-pres-spotlight'),
   btnCamera: $('#btn-pres-camera'),
+  btnGuide: $('#btn-pres-guide'),
+  onEnter: () => {
+    updateFrameGuideBox();
+  },
   onExit: () => {
     btnSpotlight.classList.toggle('active', renderer.spotlightEnabled);
+    updateFrameGuideBox();
   },
 });
 
@@ -78,11 +105,13 @@ function updateFrameGuideBox() {
   frameGuideEl.hidden = false;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  const isPresentation = document.body.classList.contains('presentation-mode');
-  const padX = isPresentation ? 48 : 96;
-  const padY = isPresentation ? 48 : 110;
-  const maxW = Math.max(260, vw - padX);
-  const maxH = Math.max(220, vh - padY);
+  const style = getComputedStyle(frameGuideEl);
+  const padL = parseFloat(style.paddingLeft) || 0;
+  const padR = parseFloat(style.paddingRight) || 0;
+  const padT = parseFloat(style.paddingTop) || 0;
+  const padB = parseFloat(style.paddingBottom) || 0;
+  const maxW = Math.max(220, vw - padL - padR);
+  const maxH = Math.max(180, vh - padT - padB);
 
   const ratio = mode === '9-16' ? 9 / 16 : 16 / 9;
   let w = maxW;
@@ -111,6 +140,7 @@ function syncToolbarAndInspector() {
   btnUndo.disabled = !store.canUndo();
   btnRedo.disabled = !store.canRedo();
   btnSpotlight.classList.toggle('active', renderer.spotlightEnabled);
+  mapsCountBadge.textContent = String(store.listMaps().length);
 
   updateFrameGuideBox();
 
@@ -153,25 +183,171 @@ function syncToolbarAndInspector() {
     btn.classList.toggle('active', btn.dataset.size === (node.size || 'md'));
   });
 
+  const activeAlign = node.align || 'center';
+  document.querySelectorAll('.seg-align button').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.align === activeAlign);
+  });
+
+  if (node.image && node.image.id) {
+    inspectorImagePreview.hidden = false;
+    const imgSize = node.image.size || 'md';
+    document.querySelectorAll('.seg-img-size button').forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.imgSize === imgSize);
+    });
+    const entry = mediaStore.getImageEntry(node.image.id);
+    if (entry) {
+      inpImageThumb.src = entry.url;
+      const fmt = extensionFromMime(entry.mime || node.image.mime).toUpperCase();
+      const dims = `${entry.width || node.image.width}×${entry.height || node.image.height}`;
+      const sizeStr = entry.sizeBytes ? ` • ${formatBytes(entry.sizeBytes)}` : '';
+      inpImageMeta.textContent = `${fmt} • ${dims}${sizeStr}`;
+    } else {
+      inpImageThumb.removeAttribute('src');
+      inpImageMeta.textContent = '';
+      mediaStore.loadImages([node.image.id]).then((loaded) => {
+        if (loaded) syncToolbarAndInspector();
+      });
+    }
+  } else {
+    inspectorImagePreview.hidden = true;
+    inpImageThumb.removeAttribute('src');
+    inpImageMeta.textContent = '';
+  }
+
+  const visibleOrder = store.getVisibleDfsOrder();
+  const stepIdx = visibleOrder.indexOf(node.id);
+  inspectorStepBadge.textContent =
+    stepIdx >= 0 ? `Passo ${stepIdx + 1} de ${visibleOrder.length}` : 'Oculto';
+
+  const parentNode = node.parentId ? store.getNode(node.parentId) : null;
+  const siblingIdx = parentNode ? parentNode.children.indexOf(node.id) : -1;
+  btnMoveUp.disabled = !parentNode || siblingIdx <= 0;
+  btnMoveDown.disabled = !parentNode || siblingIdx < 0 || siblingIdx >= parentNode.children.length - 1;
+  btnToggleSide.hidden = !(
+    node.parentId === data.rootId && (data.layout || 'bilateral') === 'bilateral'
+  );
+
   btnToggleCollapse.disabled = node.id === data.rootId || node.children.length === 0;
   btnToggleCollapse.textContent = node.collapsed ? 'Expandir ramo' : 'Recolher ramo';
   btnDeleteNode.disabled = node.id === data.rootId;
 }
 
-// Popula swatches de cor e grade de emojis no inspetor
+async function attachImageFileToNode(nodeId, file) {
+  const node = store.getNode(nodeId);
+  if (!node || !file) return;
+  try {
+    const saved = await mediaStore.saveImageFromFile(file);
+    store.updateNode(nodeId, {
+      image: {
+        id: saved.id,
+        width: saved.width,
+        height: saved.height,
+        mime: saved.mime,
+        size: node.image?.size || 'md',
+      },
+    });
+    if (saved.originalBytes > saved.sizeBytes && saved.mime === 'image/webp') {
+      const pct = Math.round((1 - saved.sizeBytes / saved.originalBytes) * 100);
+      showToast(`Convertida em WebP: ${formatBytes(saved.originalBytes)} → ${formatBytes(saved.sizeBytes)} (-${pct}%)`);
+    } else {
+      showToast(`Imagem ${extensionFromMime(saved.mime).toUpperCase()} anexada (${formatBytes(saved.sizeBytes)})`);
+    }
+  } catch (err) {
+    showToast(err.message || 'Erro ao anexar imagem');
+  }
+}
+
+async function preloadActiveMapMedia() {
+  const ids = store.getAllImageIds();
+  if (!ids.length) return;
+  const loaded = await mediaStore.loadImages(ids);
+  if (loaded) {
+    syncToolbarAndInspector();
+    renderer.render();
+  }
+}
+
+let activeLightboxImage = null;
+
+function openLightbox(imageId, nodeText = 'imagem-mapa') {
+  const entry = mediaStore.getImageEntry(imageId);
+  if (!entry) return;
+  activeLightboxImage = { id: imageId, name: nodeText };
+  lightboxImg.src = entry.url;
+  modalLightbox.hidden = false;
+}
+
+function closeLightbox() {
+  modalLightbox.hidden = true;
+  activeLightboxImage = null;
+  lightboxImg.removeAttribute('src');
+}
+
+// Popula swatches de cor e grade de emojis com categorias e busca no inspetor
 function buildInspectorControls() {
   const emojiGrid = $('#emoji-grid');
-  EMOJI_PRESETS.forEach((emoji) => {
+  const emojiTabs = $('#emoji-tabs');
+  const emojiSearch = $('#inp-emoji-search');
+  let activeCategory = EMOJI_CATEGORIES[0]?.id || 'youtube';
+
+  const normalize = (str) =>
+    String(str || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+  const renderEmojiGrid = () => {
+    const query = normalize(emojiSearch.value.trim());
+    const sourceItems = query
+      ? EMOJI_CATEGORIES.flatMap((c) => c.items).filter((item) =>
+          normalize(item.k + ' ' + item.e).includes(query)
+        )
+      : (EMOJI_CATEGORIES.find((c) => c.id === activeCategory)?.items || []);
+
+    emojiGrid.innerHTML = '';
+    if (!sourceItems.length) {
+      const empty = document.createElement('div');
+      empty.className = 'emoji-empty';
+      empty.textContent = 'Nenhum ícone encontrado.';
+      emojiGrid.appendChild(empty);
+      return;
+    }
+
+    for (const item of sourceItems) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'emoji-btn';
+      btn.textContent = item.e;
+      btn.title = item.k.split(' ').slice(0, 3).join(', ');
+      btn.addEventListener('click', () => {
+        const node = store.getSelectedNode();
+        if (node) store.updateNode(node.id, { icon: item.e });
+      });
+      emojiGrid.appendChild(btn);
+    }
+  };
+
+  const tabs = EMOJI_CATEGORIES.map((c) => ({ id: c.id, label: c.label }));
+  for (const tab of tabs) {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'emoji-btn';
-    btn.textContent = emoji;
+    btn.className = `emoji-tab${tab.id === activeCategory ? ' active' : ''}`;
+    btn.textContent = tab.label;
+    btn.dataset.cat = tab.id;
+    btn.setAttribute('role', 'tab');
     btn.addEventListener('click', () => {
-      const node = store.getSelectedNode();
-      if (node) store.updateNode(node.id, { icon: emoji });
+      activeCategory = tab.id;
+      emojiSearch.value = '';
+      emojiTabs.querySelectorAll('.emoji-tab').forEach((t) => {
+        t.classList.toggle('active', t.dataset.cat === activeCategory);
+      });
+      renderEmojiGrid();
     });
-    emojiGrid.appendChild(btn);
-  });
+    emojiTabs.appendChild(btn);
+  }
+
+  emojiSearch.addEventListener('input', renderEmojiGrid);
+  renderEmojiGrid();
 
   const swatchesEl = $('#color-swatches');
   BRANCH_PALETTE.forEach((hex) => {
@@ -206,8 +382,10 @@ function startInlineEdit(nodeId, selectAll = true) {
   const originalText = node.text;
   renderer.editingNodeId = nodeId;
   el.classList.add('is-editing');
+  titleEl.textContent = originalText || '';
   titleEl.contentEditable = 'true';
-  titleEl.focus();
+  camera.focusForEdit(renderer.lastLayout.positions.get(nodeId));
+  titleEl.focus({ preventScroll: true });
 
   if (selectAll) {
     const range = document.createRange();
@@ -216,6 +394,8 @@ function startInlineEdit(nodeId, selectAll = true) {
     sel.removeAllRanges();
     sel.addRange(range);
   }
+  viewportEl.scrollLeft = 0;
+  viewportEl.scrollTop = 0;
 
   let finished = false;
 
@@ -231,7 +411,8 @@ function startInlineEdit(nodeId, selectAll = true) {
   const commit = () => {
     if (finished) return;
     finished = true;
-    const nextText = titleEl.textContent.trim() || originalText || 'Sem título';
+    const raw = (titleEl.innerText || '').replace(/\r\n/g, '\n').trim();
+    const nextText = raw || originalText || 'Sem título';
     cleanup();
     if (nextText !== originalText) {
       store.updateNode(nodeId, { text: nextText });
@@ -299,6 +480,9 @@ function bindCanvasInteractions() {
         if (childId) startInlineEdit(childId, true);
       } else if (actionEl.dataset.action === 'toggle-collapse') {
         store.toggleCollapse(nodeId);
+      } else if (actionEl.dataset.action === 'zoom-image') {
+        const targetNode = store.getNode(nodeId);
+        if (targetNode?.image?.id) openLightbox(targetNode.image.id, targetNode.text);
       }
       return;
     }
@@ -420,6 +604,54 @@ function bindCanvasInteractions() {
       startInlineEdit(nodeEl.dataset.id, true);
     }
   });
+
+  // Arrastar e soltar arquivo de imagem direto sobre um cartão
+  let fileDropTargetId = null;
+
+  viewportEl.addEventListener('dragover', (e) => {
+    if (!e.dataTransfer?.types?.includes('Files')) return;
+    e.preventDefault();
+    const nodeEl = e.target.closest('.node');
+    const nextId = nodeEl?.dataset.id || null;
+    if (fileDropTargetId !== nextId) {
+      if (fileDropTargetId) {
+        renderer.getNodeElement(fileDropTargetId)?.classList.remove('drop-target');
+      }
+      if (nextId) {
+        renderer.getNodeElement(nextId)?.classList.add('drop-target');
+      }
+      fileDropTargetId = nextId;
+    }
+  });
+
+  viewportEl.addEventListener('dragleave', (e) => {
+    if (!viewportEl.contains(e.relatedTarget) && fileDropTargetId) {
+      renderer.getNodeElement(fileDropTargetId)?.classList.remove('drop-target');
+      fileDropTargetId = null;
+    }
+  });
+
+  viewportEl.addEventListener('drop', async (e) => {
+    if (!e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    if (fileDropTargetId) {
+      renderer.getNodeElement(fileDropTargetId)?.classList.remove('drop-target');
+      fileDropTargetId = null;
+    }
+    const file = [...e.dataTransfer.files].find(
+      (f) => f.type.startsWith('image/') || /\.webp$/i.test(f.name)
+    );
+    if (!file) {
+      showToast('Solte um arquivo de imagem (WebP, PNG, JPG ou SVG)');
+      return;
+    }
+    const nodeEl = e.target.closest('.node');
+    const targetId = nodeEl?.dataset.id || store.getSelectedNode()?.id;
+    if (targetId) {
+      store.select(targetId);
+      await attachImageFileToNode(targetId, file);
+    }
+  });
 }
 
 // Menus dropdown
@@ -446,12 +678,12 @@ function bindUIEvents() {
   $('#menu-templates').addEventListener('click', (e) => {
     const item = e.target.closest('[data-template]');
     if (!item) return;
-    store.loadTemplate(item.dataset.template);
+    store.createMap(item.dataset.template);
     closeDropdowns();
     requestAnimationFrame(() => {
       camera.fitToBounds(renderer.lastLayout.bounds, { animate: true });
     });
-    showToast(`Modelo "${item.textContent.trim()}" carregado`);
+    showToast(`Novo mapa "${item.textContent.trim()}" criado`);
   });
 
   $('#btn-export').addEventListener('click', (e) => {
@@ -470,15 +702,15 @@ function bindUIEvents() {
     try {
       if (kind === 'png-4k') {
         showToast('Gerando PNG em alta resolução...');
-        await exportPNG(store, renderer.lastLayout, { transparentBg: false });
+        await exportPNG(store, renderer.lastLayout, { transparentBg: false, mediaStore });
       } else if (kind === 'png-transparent') {
         showToast('Gerando PNG transparente...');
-        await exportPNG(store, renderer.lastLayout, { transparentBg: true });
+        await exportPNG(store, renderer.lastLayout, { transparentBg: true, mediaStore });
       } else if (kind === 'svg') {
-        exportSVG(store, renderer.lastLayout);
+        await exportSVG(store, renderer.lastLayout, mediaStore);
         showToast('SVG vetorial exportado');
       } else if (kind === 'json-save') {
-        exportJSON(store);
+        await exportJSON(store, mediaStore);
         showToast('Projeto salvo em JSON');
       } else if (kind === 'json-open') {
         fileImportInput.click();
@@ -493,11 +725,24 @@ function bindUIEvents() {
     if (!file) return;
     try {
       const obj = await readJSONFile(file);
-      store.importData(obj);
+      if (obj && obj._media && typeof obj._media === 'object') {
+        for (const [imgId, info] of Object.entries(obj._media)) {
+          if (info?.dataUrl) {
+            await mediaStore.saveImageFromDataUrl(info.dataUrl, {
+              id: imgId,
+              width: info.width,
+              height: info.height,
+              mime: info.mime,
+            });
+          }
+        }
+        delete obj._media;
+      }
+      store.importAsNewMap(obj);
       requestAnimationFrame(() => {
         camera.fitToBounds(renderer.lastLayout.bounds, { animate: true });
       });
-      showToast('Projeto carregado com sucesso');
+      showToast('Projeto importado para Meus Mapas');
     } catch (err) {
       showToast(err.message || 'Falha ao abrir arquivo');
     } finally {
@@ -546,21 +791,84 @@ function bindUIEvents() {
   });
 
   $('#btn-present').addEventListener('click', () => {
-    presentation.enter({ progressive: false });
+    presentation.enter();
   });
 
   // Inspetor
   inpNodeText.addEventListener('input', () => {
     const node = store.getSelectedNode();
-    if (node) store.updateNode(node.id, { text: inpNodeText.value }, { recordHistory: false });
+    if (node) {
+      store.updateNode(node.id, { text: inpNodeText.value }, { recordHistory: false });
+      requestAnimationFrame(() => {
+        camera.ensureNodeVisible(renderer.lastLayout.positions.get(node.id), {
+          margin: 56,
+          duration: 220,
+        });
+      });
+    }
   });
   inpNodeText.addEventListener('focus', () => store.recordSnapshot());
 
   inpNodeSubtitle.addEventListener('input', () => {
     const node = store.getSelectedNode();
-    if (node) store.updateNode(node.id, { subtitle: inpNodeSubtitle.value }, { recordHistory: false });
+    if (node) {
+      store.updateNode(node.id, { subtitle: inpNodeSubtitle.value }, { recordHistory: false });
+      requestAnimationFrame(() => {
+        camera.ensureNodeVisible(renderer.lastLayout.positions.get(node.id), {
+          margin: 56,
+          duration: 220,
+        });
+      });
+    }
   });
   inpNodeSubtitle.addEventListener('focus', () => store.recordSnapshot());
+
+  document.querySelectorAll('.fmt-btn[data-fmt-target]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const targetId = btn.dataset.fmtTarget;
+      const wrap = btn.dataset.fmtWrap || '**';
+      const fieldEl = document.getElementById(targetId);
+      const node = store.getSelectedNode();
+      if (!fieldEl || !node) return;
+
+      const start = fieldEl.selectionStart ?? fieldEl.value.length;
+      const end = fieldEl.selectionEnd ?? fieldEl.value.length;
+      const val = fieldEl.value;
+      const selected = val.slice(start, end);
+      const placeholder =
+        wrap === '=='
+          ? 'destaque'
+          : wrap === '--'
+            ? 'pequeno'
+            : wrap === '__'
+              ? 'itálico'
+              : 'negrito';
+
+      store.recordSnapshot();
+
+      let nextVal;
+      let nextSelStart;
+      let nextSelEnd;
+
+      if (selected && selected.startsWith(wrap) && selected.endsWith(wrap) && selected.length > wrap.length * 2) {
+        const inner = selected.slice(wrap.length, -wrap.length);
+        nextVal = val.slice(0, start) + inner + val.slice(end);
+        nextSelStart = start;
+        nextSelEnd = start + inner.length;
+      } else {
+        const inner = selected || placeholder;
+        nextVal = val.slice(0, start) + wrap + inner + wrap + val.slice(end);
+        nextSelStart = start + wrap.length;
+        nextSelEnd = nextSelStart + inner.length;
+      }
+
+      fieldEl.value = nextVal;
+      const prop = targetId === 'inp-node-text' ? 'text' : 'subtitle';
+      store.updateNode(node.id, { [prop]: nextVal }, { recordHistory: false });
+      fieldEl.focus();
+      fieldEl.setSelectionRange(nextSelStart, nextSelEnd);
+    });
+  });
 
   inpNodeIcon.addEventListener('input', () => {
     const node = store.getSelectedNode();
@@ -596,6 +904,86 @@ function bindUIEvents() {
     if (btn && node) store.updateNode(node.id, { size: btn.dataset.size });
   });
 
+  document.querySelector('.seg-align').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-align]');
+    const node = store.getSelectedNode();
+    if (btn && node) store.updateNode(node.id, { align: btn.dataset.align });
+  });
+
+  $('#btn-upload-image').addEventListener('click', () => {
+    fileUploadImage.click();
+  });
+
+  fileUploadImage.addEventListener('change', async (e) => {
+    const file = e.target.files?.[0];
+    const node = store.getSelectedNode();
+    if (file && node) {
+      await attachImageFileToNode(node.id, file);
+    }
+    fileUploadImage.value = '';
+  });
+
+  btnDownloadImage.addEventListener('click', async () => {
+    const node = store.getSelectedNode();
+    if (!node?.image?.id) return;
+    try {
+      const filename = await mediaStore.downloadImage(node.image.id, node.text || 'imagem-mapa');
+      showToast(`Imagem salva: ${filename}`);
+    } catch (err) {
+      showToast(err.message || 'Erro ao salvar imagem');
+    }
+  });
+
+  btnRemoveImage.addEventListener('click', async () => {
+    const node = store.getSelectedNode();
+    if (!node?.image?.id) return;
+    const oldImageId = node.image.id;
+    store.updateNode(node.id, { image: null });
+    if (!store.getAllLibraryImageIds().has(oldImageId)) {
+      await mediaStore.deleteImage(oldImageId);
+    }
+    showToast('Imagem excluída');
+  });
+
+  btnLightboxDownload.addEventListener('click', async () => {
+    if (!activeLightboxImage?.id) return;
+    try {
+      const filename = await mediaStore.downloadImage(
+        activeLightboxImage.id,
+        activeLightboxImage.name || 'imagem-mapa'
+      );
+      showToast(`Imagem salva: ${filename}`);
+    } catch (err) {
+      showToast(err.message || 'Erro ao salvar imagem');
+    }
+  });
+
+  document.querySelector('.seg-img-size').addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-img-size]');
+    const node = store.getSelectedNode();
+    if (btn && node?.image) {
+      store.updateNode(node.id, {
+        image: { ...node.image, size: btn.dataset.imgSize },
+      });
+    }
+  });
+
+  $('#btn-close-lightbox').addEventListener('click', closeLightbox);
+  modalLightbox.querySelector('.modal-backdrop').addEventListener('click', closeLightbox);
+
+  window.addEventListener('paste', async (e) => {
+    if (presentation.active) return;
+    const items = [...(e.clipboardData?.items || [])];
+    const imageItem = items.find((it) => it.type.startsWith('image/'));
+    if (!imageItem) return;
+    const file = imageItem.getAsFile();
+    const node = store.getSelectedNode();
+    if (file && node) {
+      e.preventDefault();
+      await attachImageFileToNode(node.id, file);
+    }
+  });
+
   $('#btn-add-child').addEventListener('click', () => {
     const node = store.getSelectedNode();
     if (!node) return;
@@ -620,13 +1008,30 @@ function bindUIEvents() {
     if (node) store.deleteNode(node.id);
   });
 
+  btnMoveUp.addEventListener('click', () => {
+    const node = store.getSelectedNode();
+    if (node) store.moveNodeOrder(node.id, -1);
+  });
+
+  btnMoveDown.addEventListener('click', () => {
+    const node = store.getSelectedNode();
+    if (node) store.moveNodeOrder(node.id, 1);
+  });
+
+  btnToggleSide.addEventListener('click', () => {
+    const node = store.getSelectedNode();
+    if (node) store.toggleNodeSide(node.id);
+  });
+
   // Toggle inspetor e zoom
   $('#btn-close-inspector').addEventListener('click', () => {
     document.body.classList.add('inspector-collapsed');
+    updateFrameGuideBox();
   });
 
   $('#btn-toggle-inspector').addEventListener('click', () => {
     document.body.classList.toggle('inspector-collapsed');
+    updateFrameGuideBox();
   });
 
   $('#btn-zoom-in').addEventListener('click', () => camera.zoomByStep(1.2));
@@ -642,6 +1047,7 @@ function bindUIEvents() {
   $('#btn-pres-spotlight').addEventListener('click', () => presentation.toggleSpotlight());
   $('#btn-pres-camera').addEventListener('click', () => presentation.toggleAutoCamera());
   $('#btn-pres-show-all').addEventListener('click', () => presentation.showAllOverview());
+  $('#btn-pres-guide').addEventListener('click', () => presentation.toggleGuideVisual());
   $('#btn-pres-hide-hud').addEventListener('click', () => presentation.toggleHudVisibility());
   $('#btn-pres-exit').addEventListener('click', () => presentation.exit());
 
@@ -656,9 +1062,230 @@ function bindUIEvents() {
     modalHelp.hidden = true;
   });
 
+  // Modal Meus Mapas
+  $('#btn-my-maps').addEventListener('click', () => {
+    closeDropdowns();
+    openMapsModal();
+  });
+  $('#btn-close-maps').addEventListener('click', closeMapsModal);
+  modalMaps.querySelector('.modal-backdrop').addEventListener('click', closeMapsModal);
+  $('#btn-new-map').addEventListener('click', () => {
+    store.createMap('blank');
+    closeMapsModal();
+    requestAnimationFrame(() => {
+      camera.fitToBounds(renderer.lastLayout.bounds, { animate: true });
+    });
+    showToast('Novo mapa criado');
+  });
+  inpSearchMaps.addEventListener('input', () => {
+    renderMapsList(inpSearchMaps.value);
+  });
+
   window.addEventListener('resize', () => {
     updateFrameGuideBox();
   });
+}
+
+const THEME_LABELS = {
+  'dark-studio': 'Dark Studio',
+  neon: 'Neon Tech',
+  'clean-light': 'Clean Editorial',
+  chalkboard: 'Quadro Negro',
+  'chroma-key': 'Chroma Key',
+};
+
+function formatMapDate(ts) {
+  try {
+    return new Intl.DateTimeFormat('pt-BR', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(ts));
+  } catch {
+    return '';
+  }
+}
+
+let confirmingDeleteId = null;
+let confirmDeleteTimer = null;
+
+function openMapsModal() {
+  confirmingDeleteId = null;
+  inpSearchMaps.value = '';
+  renderMapsList('');
+  modalMaps.hidden = false;
+}
+
+function closeMapsModal() {
+  confirmingDeleteId = null;
+  if (confirmDeleteTimer) {
+    clearTimeout(confirmDeleteTimer);
+    confirmDeleteTimer = null;
+  }
+  modalMaps.hidden = true;
+}
+
+function renderMapsList(filterText = '') {
+  const query = filterText.trim().toLowerCase();
+  const maps = store.listMaps().filter((m) => !query || m.title.toLowerCase().includes(query));
+
+  mapsListEl.innerHTML = '';
+
+  if (maps.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'maps-empty';
+    empty.textContent = query
+      ? 'Nenhum mapa encontrado com esse título.'
+      : 'Você ainda não tem mapas salvos.';
+    mapsListEl.appendChild(empty);
+    return;
+  }
+
+  for (const map of maps) {
+    const card = document.createElement('div');
+    card.className = `map-card${map.isActive ? ' is-active' : ''}`;
+
+    const top = document.createElement('div');
+    top.className = 'map-card-top';
+
+    const titleRow = document.createElement('div');
+    titleRow.className = 'map-card-title-row';
+
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'map-card-icon';
+    iconSpan.textContent = map.icon;
+
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'map-card-title';
+    titleSpan.textContent = map.title;
+    titleSpan.title = map.title;
+
+    titleRow.append(iconSpan, titleSpan);
+    top.appendChild(titleRow);
+
+    if (map.isActive) {
+      const activePill = document.createElement('span');
+      activePill.className = 'map-active-pill';
+      activePill.textContent = 'Atual';
+      top.appendChild(activePill);
+    }
+
+    const meta = document.createElement('div');
+    meta.className = 'map-card-meta';
+    const topicsLabel = map.nodeCount === 1 ? '1 tópico' : `${map.nodeCount} tópicos`;
+    meta.textContent = `${topicsLabel} • ${THEME_LABELS[map.theme] || map.theme} • ${formatMapDate(map.updatedAt)}`;
+
+    const actions = document.createElement('div');
+    actions.className = 'map-card-actions';
+
+    const btnRename = document.createElement('button');
+    btnRename.type = 'button';
+    btnRename.className = 'btn btn-soft';
+    btnRename.textContent = 'Renomear';
+    btnRename.addEventListener('click', (e) => {
+      e.stopPropagation();
+      startCardRename(titleRow, titleSpan, map);
+    });
+
+    const btnDuplicate = document.createElement('button');
+    btnDuplicate.type = 'button';
+    btnDuplicate.className = 'btn btn-soft';
+    btnDuplicate.textContent = 'Duplicar';
+    btnDuplicate.addEventListener('click', (e) => {
+      e.stopPropagation();
+      store.duplicateMap(map.id);
+      closeMapsModal();
+      requestAnimationFrame(() => {
+        camera.fitToBounds(renderer.lastLayout.bounds, { animate: true });
+      });
+      showToast('Mapa duplicado');
+    });
+
+    const btnDelete = document.createElement('button');
+    btnDelete.type = 'button';
+    const isConfirming = confirmingDeleteId === map.id;
+    btnDelete.className = `btn btn-danger-soft${isConfirming ? ' btn-confirm-delete' : ''}`;
+    btnDelete.textContent = isConfirming ? 'Confirmar?' : 'Excluir';
+    btnDelete.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (confirmingDeleteId !== map.id) {
+        confirmingDeleteId = map.id;
+        if (confirmDeleteTimer) clearTimeout(confirmDeleteTimer);
+        confirmDeleteTimer = setTimeout(() => {
+          confirmingDeleteId = null;
+          if (!modalMaps.hidden) renderMapsList(inpSearchMaps.value);
+        }, 3000);
+        renderMapsList(inpSearchMaps.value);
+        return;
+      }
+      confirmingDeleteId = null;
+      const wasActive = map.isActive;
+      store.deleteMap(map.id);
+      mediaStore.pruneUnused(store.getAllLibraryImageIds());
+      renderMapsList(inpSearchMaps.value);
+      if (wasActive) {
+        requestAnimationFrame(() => {
+          camera.fitToBounds(renderer.lastLayout.bounds, { animate: true });
+        });
+      }
+      showToast('Mapa excluído');
+    });
+
+    actions.append(btnRename, btnDuplicate, btnDelete);
+    card.append(top, meta, actions);
+
+    card.addEventListener('click', () => {
+      if (!map.isActive) {
+        store.switchMap(map.id);
+        requestAnimationFrame(() => {
+          camera.fitToBounds(renderer.lastLayout.bounds, { animate: true });
+        });
+        showToast(`Mapa "${map.title}" aberto`);
+      }
+      closeMapsModal();
+    });
+
+    mapsListEl.appendChild(card);
+  }
+}
+
+function startCardRename(titleRow, titleSpan, map) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'map-rename-input';
+  input.value = map.title;
+
+  titleSpan.replaceWith(input);
+  input.focus();
+  input.select();
+
+  input.addEventListener('click', (e) => e.stopPropagation());
+
+  let done = false;
+  const commit = () => {
+    if (done) return;
+    done = true;
+    store.renameMap(map.id, input.value);
+    renderMapsList(inpSearchMaps.value);
+  };
+  const cancel = () => {
+    if (done) return;
+    done = true;
+    renderMapsList(inpSearchMaps.value);
+  };
+
+  input.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      commit();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      cancel();
+    }
+  });
+  input.addEventListener('blur', commit);
 }
 
 function isTypingTarget(el) {
@@ -669,6 +1296,16 @@ function isTypingTarget(el) {
 
 function bindKeyboardShortcuts() {
   window.addEventListener('keydown', (e) => {
+    if (!modalLightbox.hidden) {
+      if (e.key === 'Escape') closeLightbox();
+      return;
+    }
+
+    if (!modalMaps.hidden) {
+      if (e.key === 'Escape') closeMapsModal();
+      return;
+    }
+
     if (!modalHelp.hidden) {
       if (e.key === 'Escape') modalHelp.hidden = true;
       return;
@@ -701,9 +1338,18 @@ function bindKeyboardShortcuts() {
       } else if (e.key === 'a' || e.key === 'A') {
         e.preventDefault();
         presentation.showAllOverview();
+      } else if (e.key === 'g' || e.key === 'G') {
+        e.preventDefault();
+        presentation.toggleGuideVisual();
       } else if (e.key === 'h' || e.key === 'H') {
         e.preventDefault();
         presentation.toggleHudVisibility();
+      } else if (e.key === '+' || e.key === '=') {
+        e.preventDefault();
+        camera.zoomByStep(1.15);
+      } else if (e.key === '-') {
+        e.preventDefault();
+        camera.zoomByStep(0.87);
       }
       return;
     }
@@ -724,7 +1370,13 @@ function bindKeyboardShortcuts() {
     const selected = store.getSelectedNode();
     if (!selected) return;
 
-    if (e.key === 'Tab') {
+    if (e.altKey && e.key === 'ArrowUp') {
+      e.preventDefault();
+      store.moveNodeOrder(selected.id, -1);
+    } else if (e.altKey && e.key === 'ArrowDown') {
+      e.preventDefault();
+      store.moveNodeOrder(selected.id, 1);
+    } else if (e.key === 'Tab') {
       e.preventDefault();
       const childId = store.addChild(selected.id, 'Novo Tópico');
       if (childId) startInlineEdit(childId, true);
@@ -751,7 +1403,11 @@ function bindKeyboardShortcuts() {
       syncToolbarAndInspector();
     } else if (e.key === 'p' || e.key === 'P') {
       e.preventDefault();
-      presentation.enter({ progressive: false });
+      presentation.enter();
+    } else if (e.key === 'm' || e.key === 'M') {
+      e.preventDefault();
+      closeDropdowns();
+      openMapsModal();
     } else if (e.key === '?') {
       e.preventDefault();
       modalHelp.hidden = false;
@@ -772,14 +1428,18 @@ function init() {
   bindUIEvents();
   bindKeyboardShortcuts();
 
-  store.subscribe(() => {
+  store.subscribe((_, reason) => {
     syncToolbarAndInspector();
     renderer.render();
+    if (reason === 'map-switch' || reason === 'template' || reason === 'import') {
+      preloadActiveMapMedia();
+    }
   });
 
   syncToolbarAndInspector();
   const layout = renderer.render();
   camera.fitToBounds(layout.bounds, { animate: false, padding: 72 });
+  preloadActiveMapMedia();
 }
 
 init();
