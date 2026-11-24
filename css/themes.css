@@ -1,0 +1,156 @@
+/* ==========================================================================
+   MapaMental Studio — Temas Visuais
+   ========================================================================== */
+
+:root {
+  --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --accent: #38BDF8;
+  --accent-strong: #0EA5E9;
+  --danger: #FB7185;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+}
+
+/* 1. Dark Studio (padrão cinematográfico para YouTube) */
+body[data-theme="dark-studio"] {
+  --bg-base: #080C16;
+  --bg-ambient:
+    radial-gradient(circle at 20% 20%, rgba(56, 189, 248, 0.14), transparent 45%),
+    radial-gradient(circle at 80% 78%, rgba(167, 139, 250, 0.14), transparent 48%);
+  --grid-dot: rgba(255, 255, 255, 0.065);
+  --grid-size: 28px;
+
+  --ui-bg: rgba(15, 23, 42, 0.80);
+  --ui-bg-solid: #0F172A;
+  --ui-border: rgba(148, 163, 184, 0.18);
+  --ui-text: #F8FAFC;
+  --ui-muted: #94A3B8;
+  --ui-hover: rgba(255, 255, 255, 0.08);
+  --ui-shadow: 0 18px 45px rgba(2, 6, 23, 0.55);
+
+  --node-bg: rgba(17, 24, 39, 0.90);
+  --node-root-bg: linear-gradient(135deg, rgba(30, 41, 59, 0.98), rgba(15, 23, 42, 0.98));
+  --node-border: rgba(148, 163, 184, 0.22);
+  --node-text: #F8FAFC;
+  --node-subtext: #94A3B8;
+  --node-shadow: 0 14px 32px rgba(2, 6, 23, 0.55);
+
+  --edge-opacity: 0.85;
+  --edge-filter: none;
+  --frame-veil: rgba(4, 7, 15, 0.62);
+}
+
+/* 2. Neon Tech */
+body[data-theme="neon"] {
+  --bg-base: #04040A;
+  --bg-ambient:
+    radial-gradient(circle at 18% 25%, rgba(34, 211, 238, 0.16), transparent 42%),
+    radial-gradient(circle at 82% 72%, rgba(232, 121, 249, 0.16), transparent 45%);
+  --grid-dot: rgba(56, 189, 248, 0.11);
+  --grid-size: 26px;
+
+  --ui-bg: rgba(10, 10, 22, 0.84);
+  --ui-bg-solid: #0A0A16;
+  --ui-border: rgba(56, 189, 248, 0.28);
+  --ui-text: #F8FAFC;
+  --ui-muted: #A5B4FC;
+  --ui-hover: rgba(56, 189, 248, 0.14);
+  --ui-shadow: 0 16px 46px rgba(0, 0, 0, 0.72);
+
+  --node-bg: rgba(12, 14, 28, 0.92);
+  --node-root-bg: linear-gradient(135deg, #131632, #090A17);
+  --node-border: rgba(99, 102, 241, 0.35);
+  --node-text: #FFFFFF;
+  --node-subtext: #C7D2FE;
+  --node-shadow: 0 0 24px rgba(56, 189, 248, 0.16), 0 14px 30px rgba(0, 0, 0, 0.72);
+
+  --edge-opacity: 0.95;
+  --edge-filter: url(#edge-glow-filter);
+  --frame-veil: rgba(2, 2, 8, 0.68);
+}
+
+/* 3. Clean Editorial (claro e elegante) */
+body[data-theme="clean-light"] {
+  --bg-base: #F4F6FA;
+  --bg-ambient:
+    radial-gradient(circle at 15% 18%, rgba(56, 189, 248, 0.12), transparent 45%),
+    radial-gradient(circle at 85% 80%, rgba(167, 139, 250, 0.10), transparent 45%);
+  --grid-dot: rgba(15, 23, 42, 0.085);
+  --grid-size: 26px;
+
+  --ui-bg: rgba(255, 255, 255, 0.88);
+  --ui-bg-solid: #FFFFFF;
+  --ui-border: rgba(15, 23, 42, 0.11);
+  --ui-text: #0F172A;
+  --ui-muted: #64748B;
+  --ui-hover: rgba(15, 23, 42, 0.06);
+  --ui-shadow: 0 16px 40px rgba(15, 23, 42, 0.10);
+
+  --node-bg: #FFFFFF;
+  --node-root-bg: linear-gradient(135deg, #FFFFFF, #F1F5F9);
+  --node-border: rgba(15, 23, 42, 0.11);
+  --node-text: #0F172A;
+  --node-subtext: #475569;
+  --node-shadow: 0 10px 26px rgba(15, 23, 42, 0.09);
+
+  --edge-opacity: 0.90;
+  --edge-filter: none;
+  --frame-veil: rgba(15, 23, 42, 0.35);
+}
+
+/* 4. Quadro Negro (estilo aula/explicação) */
+body[data-theme="chalkboard"] {
+  --bg-base: #13201B;
+  --bg-ambient:
+    radial-gradient(circle at 50% 45%, rgba(52, 211, 153, 0.08), transparent 60%);
+  --grid-dot: rgba(245, 245, 240, 0.055);
+  --grid-size: 32px;
+
+  --ui-bg: rgba(18, 30, 26, 0.90);
+  --ui-bg-solid: #121E1A;
+  --ui-border: rgba(245, 245, 240, 0.18);
+  --ui-text: #F5F5EE;
+  --ui-muted: #A7BEB4;
+  --ui-hover: rgba(245, 245, 240, 0.08);
+  --ui-shadow: 0 16px 40px rgba(0, 0, 0, 0.48);
+
+  --node-bg: rgba(22, 37, 31, 0.94);
+  --node-root-bg: linear-gradient(135deg, #1E332B, #14221C);
+  --node-border: rgba(245, 245, 240, 0.24);
+  --node-text: #FAF9F2;
+  --node-subtext: #BDD1C7;
+  --node-shadow: 0 12px 26px rgba(0, 0, 0, 0.38);
+
+  --edge-opacity: 0.88;
+  --edge-filter: none;
+  --frame-veil: rgba(9, 16, 13, 0.58);
+}
+
+/* 5. Chroma Key (OBS) — fundo verde puro #00FF00 e cartões opacos para recorte limpo */
+body[data-theme="chroma-key"] {
+  --bg-base: #00FF00;
+  --bg-ambient: none;
+  --grid-dot: transparent;
+  --grid-size: 28px;
+
+  --ui-bg: rgba(15, 23, 42, 0.95);
+  --ui-bg-solid: #0F172A;
+  --ui-border: rgba(255, 255, 255, 0.20);
+  --ui-text: #F8FAFC;
+  --ui-muted: #94A3B8;
+  --ui-hover: rgba(255, 255, 255, 0.10);
+  --ui-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+
+  --node-bg: #111827;
+  --node-root-bg: #0F172A;
+  --node-border: #334155;
+  --node-text: #FFFFFF;
+  --node-subtext: #CBD5E1;
+  --node-shadow: 0 10px 22px rgba(0, 0, 0, 0.42);
+
+  --edge-opacity: 1;
+  --edge-filter: none;
+  --frame-veil: transparent;
+}
